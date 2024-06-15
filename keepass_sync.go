@@ -26,6 +26,7 @@ import (
 type KeepasDBSync struct {
 	localKeepassDB      *gokeepasslib.Database
 	remoteKeepassDBCopy *gokeepasslib.Database
+	syncKeepassDB       *gokeepasslib.Database
 }
 
 func newKeepasDBSync(localDBFileObj *os.File, remoteDBCopyFileObj *os.File, pass string) (*KeepasDBSync, error) {
@@ -35,6 +36,10 @@ func newKeepasDBSync(localDBFileObj *os.File, remoteDBCopyFileObj *os.File, pass
 	cred := gokeepasslib.NewPasswordCredentials(pass)
 	localDB.Credentials = cred
 	remoteDBCopy.Credentials = cred
+
+	syncDB := gokeepasslib.NewDatabase(
+		gokeepasslib.WithDatabaseKDBXVersion4(),
+	)
 
 	err := gokeepasslib.NewDecoder(localDBFileObj).Decode(localDB)
 	if err != nil {
@@ -49,11 +54,85 @@ func newKeepasDBSync(localDBFileObj *os.File, remoteDBCopyFileObj *os.File, pass
 	defer localDB.LockProtectedEntries()
 	remoteDBCopy.UnlockProtectedEntries()
 	defer remoteDBCopy.LockProtectedEntries()
+	defer syncDB.LockProtectedEntries()
+
+	// TODO: here is the potential bug!
+	syncDB.Content = localDB.Content
+	syncDB.Credentials = localDB.Credentials
 
 	return &KeepasDBSync{
 		localKeepassDB:      localDB,
 		remoteKeepassDBCopy: remoteDBCopy,
+		syncKeepassDB:       syncDB,
 	}, nil
+}
+
+func (keepassSync KeepasDBSync) saveSyncwDB(fileName string) error {
+	newFile, err := os.Create(fileName)
+	if err != nil {
+		return fmt.Errorf("can't create new Keepass DB file: %v", err)
+	}
+	defer newFile.Close()
+
+	// newKeepassDB.LockProtectedEntries()
+	keepassEncoder := gokeepasslib.NewEncoder(newFile)
+	if err := keepassEncoder.Encode(keepassSync.syncKeepassDB); err != nil {
+		return fmt.Errorf("can't encode new keepass DB: %v", err)
+	}
+
+	return nil
+}
+
+func (keepasDBSync KeepasDBSync) syncBases() error {
+	localEntries := keepasDBSync.localKeepassDB.Content.Root.Groups[0].Entries
+	remoteCopyEntries := keepasDBSync.remoteKeepassDBCopy.Content.Root.Groups[0].Entries
+
+	var missingInLocal []gokeepasslib.Entry
+	var missingInRemote []gokeepasslib.Entry
+	var newEntries []gokeepasslib.Entry
+
+	// convert entries lists to maps to ease search by uuid
+	mapLocalEntries := make(map[string]gokeepasslib.Entry)
+	mapRemoteEntries := make(map[string]gokeepasslib.Entry)
+	for _, entry := range localEntries {
+		mapLocalEntries[fmt.Sprintf("%x", entry.UUID)] = entry
+	}
+	for _, entry := range remoteCopyEntries {
+		mapRemoteEntries[fmt.Sprintf("%x", entry.UUID)] = entry
+	}
+
+	// find missing entries in remote Keepass DB and for matching uuids find the latest modified version
+	for localKey, localValue := range mapLocalEntries {
+		remoteValue, ok := mapRemoteEntries[localKey]
+		if !ok {
+			missingInRemote = append(missingInRemote, localValue)
+		} else {
+			// TODO: LastModificationTime could be nil
+			if remoteValue.Times.LastModificationTime.Time.After(localValue.Times.LastModificationTime.Time) {
+				newEntries = append(newEntries, remoteValue)
+			} else {
+				newEntries = append(newEntries, localValue)
+			}
+		}
+	}
+	// find missing entries in local Keepass DB
+	for remoteKey, remoteValue := range mapRemoteEntries {
+		_, ok := mapLocalEntries[remoteKey]
+		if !ok {
+			missingInLocal = append(missingInLocal, remoteValue)
+		}
+	}
+	// add missing entries
+	newEntries = append(newEntries, missingInLocal...)
+	newEntries = append(newEntries, missingInRemote...)
+	keepasDBSync.syncKeepassDB.Content.Root.Groups[0].Entries = newEntries
+
+	err := keepasDBSync.saveSyncwDB("tmp.kdbx")
+	if err != nil {
+		return fmt.Errorf("can't save new keepas DB: %v", err)
+	}
+
+	return nil
 }
 
 // ####################
@@ -241,7 +320,15 @@ func main() {
 		log.Fatalf("Unable to open one of Keepass DBs: %v", err)
 	}
 
+	keepasSync.syncBases()
+
 	//############### print-debug part :)
-	fmt.Printf("?????????%v\n", keepasSync.localKeepassDB.Content.Root.Groups[0].Entries[0].Times)
-	fmt.Printf("!!!!!!!!!%v\n", keepasSync.remoteKeepassDBCopy.Content.Root.Groups[0].Entries[0].Times)
+	localEntries := keepasSync.localKeepassDB.Content.Root.Groups[0].Entries
+	remoteCopyEntries := keepasSync.remoteKeepassDBCopy.Content.Root.Groups[0].Entries
+	fmt.Println("Local DB:")
+	fmt.Printf("UUID: %x\n", localEntries[0].UUID)
+	fmt.Printf("Time: %v\n", localEntries[0].Times.LastModificationTime)
+	fmt.Println("Remote DB copy:")
+	fmt.Printf("UUID: %x\n", remoteCopyEntries[0].UUID)
+	fmt.Printf("Time: %v\n", remoteCopyEntries[0].Times.LastModificationTime)
 }
