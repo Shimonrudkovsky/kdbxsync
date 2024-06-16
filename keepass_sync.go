@@ -218,16 +218,18 @@ func newKeepasDBSync(
 }
 
 func (keepassSync KeepasDBSync) saveSyncDB(dbSettings *DataBaseSettings) error {
-	syncDBFileObj, err := os.Open(fmt.Sprintf("%s/%s", dbSettings.directory, dbSettings.syncDBName))
+	syncDBFileObj, err := os.OpenFile(fmt.Sprintf("%s/%s", dbSettings.directory, dbSettings.syncDBName), os.O_WRONLY, os.ModeAppend)
 	if err != nil {
 		return fmt.Errorf("can't open sync DB file: %v", err)
 	}
 	defer syncDBFileObj.Close()
 
+	keepassSync.syncKeepassDB.LockProtectedEntries()
 	keepassEncoder := gokeepasslib.NewEncoder(syncDBFileObj)
 	if err := keepassEncoder.Encode(keepassSync.syncKeepassDB); err != nil {
 		return fmt.Errorf("can't encode sync keepass DB: %v", err)
 	}
+	syncDBFileObj.Sync()
 
 	return nil
 }
