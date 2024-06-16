@@ -137,19 +137,35 @@ func getClient(config *oauth2.Config) *http.Client {
 	return config.Client(context.Background(), tok)
 }
 
+type httpServer struct {
+	channel chan string
+}
+
+func (hs *httpServer) runHttpServer() error {
+	// listen on port for callback and return code to the channel
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		hs.channel <- r.URL.Query()["code"][0]
+	})
+	// TODO: remove hardcoded port
+	http.ListenAndServe(":3030", nil)
+
+	return nil
+}
+
 // Request a token from the web, then returns the retrieved token.
 func getTokenFromWeb(config *oauth2.Config) *oauth2.Token {
 	authURL := config.AuthCodeURL("state-token", oauth2.AccessTypeOffline)
 	fmt.Printf("Go to the following link in your browser then type the "+
 		"authorization code: \n%v\n", authURL)
 
-	// TODO: automate this parts
-	var authCode string
-	if _, err := fmt.Scan(&authCode); err != nil {
-		log.Fatalf("Unable to read authorization code %v", err)
-	}
+	// run goroutine to listen for callback
+	channel := make(chan string)
+	hs := httpServer{channel: channel}
+	go hs.runHttpServer()
+	// get the code from callback
+	msg := <-channel
 
-	tok, err := config.Exchange(context.TODO(), authCode)
+	tok, err := config.Exchange(context.TODO(), msg)
 	if err != nil {
 		log.Fatalf("Unable to retrieve token from web %v", err)
 	}
