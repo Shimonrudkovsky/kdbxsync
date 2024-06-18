@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -17,6 +17,7 @@ import (
 
 	"google.golang.org/api/drive/v3"
 
+	"keepass_sync/http_server"
 	"keepass_sync/settings"
 )
 
@@ -124,52 +125,48 @@ func (controller GoogleDriveController) DownloadRemoteKeepassDB(dbSettings *sett
 }
 
 // Retrieve a token, saves the token, then returns the generated client.
-func getClient(config *oauth2.Config) *http.Client {
+func getClient(config *oauth2.Config) (*http.Client, error) {
 	// The file token.json stores the user's access and refresh tokens, and is
 	// created automatically when the authorization flow completes for the first
 	// time.
 	tokFile := "token.json"
 	tok, err := tokenFromFile(tokFile)
 	if err != nil {
-		tok = getTokenFromWeb(config)
-		saveToken(tokFile, tok)
+		tok, webTokenErr := getTokenFromWeb(config)
+		if webTokenErr != nil {
+			return nil, webTokenErr
+		}
+		tokenErr := saveToken(tokFile, tok)
+		if tokenErr != nil {
+			return nil, err
+		}
 	}
-	return config.Client(context.Background(), tok)
-}
-
-type httpServer struct {
-	channel chan string
-}
-
-func (hs *httpServer) runHttpServer() error {
-	// listen on port for callback and return code to the channel
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		hs.channel <- r.URL.Query()["code"][0]
-	})
-	// TODO: remove hardcoded port
-	http.ListenAndServe(":3030", nil)
-
-	return nil
+	return config.Client(context.Background(), tok), nil
 }
 
 // Request a token from the web, then returns the retrieved token.
-func getTokenFromWeb(config *oauth2.Config) *oauth2.Token {
+func getTokenFromWeb(config *oauth2.Config) (*oauth2.Token, error) {
 	authURL := config.AuthCodeURL("state-token", oauth2.AccessTypeOffline)
-	fmt.Printf("Go to the following link in your browser then type the "+
-		"authorization code: \n%v\n", authURL)
-
-	// run goroutine to listen for callback
 	channel := make(chan string)
-	hs := httpServer{channel: channel}
-	go hs.runHttpServer()
+	hs := http_server.HttpServer{Channel: channel}
+
+	// open authURL in browser *specific for macos
+	command := exec.Command("open", authURL)
+	err := command.Run()
+	if err != nil {
+		return nil, fmt.Errorf("exec error: %v", err)
+	}
+	// run goroutine to listen for callback
+	go hs.RunHttpServer()
 	// get the code from callback
 	msg := <-channel
 
 	tok, err := config.Exchange(context.TODO(), msg)
 	if err != nil {
-		log.Fatalf("Unable to retrieve token from web %v", err)
+		return nil, fmt.Errorf("can't retrieve token from web %v", err)
 	}
-	return tok
+
+	return tok, nil
 }
 
 // Retrieves a token from a local file.
@@ -185,29 +182,34 @@ func tokenFromFile(file string) (*oauth2.Token, error) {
 }
 
 // Saves a token to a file path.
-func saveToken(path string, token *oauth2.Token) {
+func saveToken(path string, token *oauth2.Token) error {
 	fmt.Printf("Saving credential file to: %s\n", path)
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
-		log.Fatalf("Unable to cache oauth token: %v", err)
+		return fmt.Errorf("can't cache oauth token: %v", err)
 	}
 	defer f.Close()
 	json.NewEncoder(f).Encode(token)
+
+	return nil
 }
 
 func NewGoogleDriveController(credentialsPath string) (*GoogleDriveController, error) {
 	ctx := context.Background()
 	b, err := os.ReadFile(credentialsPath)
 	if err != nil {
-		return nil, fmt.Errorf("unable to read client secret file: %v", err)
+		return nil, fmt.Errorf("can't read client secret file: %v", err)
 	}
 
 	// If modifying these scopes, delete your previously saved token.json.
 	config, err := google.ConfigFromJSON(b, drive.DriveScope)
 	if err != nil {
-		return nil, fmt.Errorf("unable to parse client secret file to config: %v", err)
+		return nil, fmt.Errorf("can't parse client secret file to config: %v", err)
 	}
-	client := getClient(config)
+	client, err := getClient(config)
+	if err != nil {
+		return nil, err
+	}
 
 	srv, err := drive.NewService(ctx, option.WithHTTPClient(client))
 	if err != nil {

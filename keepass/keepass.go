@@ -3,35 +3,36 @@ package keepass
 import (
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"time"
 
 	"keepass_sync/google_drive"
 	"keepass_sync/settings"
+	"keepass_sync/utils"
 
 	"github.com/tobischo/gokeepasslib/v3"
 )
 
-type KeepasDBSync struct {
+type KeepassDBSync struct {
 	LocalKeepassDB      *gokeepasslib.Database
 	RemoteKeepassDBCopy *gokeepasslib.Database
 	SyncKeepassDB       *gokeepasslib.Database
+	dbSettings          *settings.DataBaseSettings
 }
 
-func newKeepasDBSync(
+func newKeepassDBSync(
 	localDBFileObj *os.File,
 	remoteDBCopyFileObj *os.File,
 	tmpSyncFileObj *os.File,
-	pass string,
-) (*KeepasDBSync, error) {
+	dbSettings *settings.DataBaseSettings,
+) (*KeepassDBSync, error) {
 	// new db instances to decode files into
 	localDB := gokeepasslib.NewDatabase()
 	remoteDBCopy := gokeepasslib.NewDatabase()
 	syncDB := gokeepasslib.NewDatabase()
 
 	// pass
-	cred := gokeepasslib.NewPasswordCredentials(pass)
+	cred := gokeepasslib.NewPasswordCredentials(dbSettings.Password)
 	localDB.Credentials = cred
 	remoteDBCopy.Credentials = cred
 	syncDB.Credentials = cred
@@ -57,15 +58,16 @@ func newKeepasDBSync(
 	syncDB.UnlockProtectedEntries()
 	defer syncDB.LockProtectedEntries()
 
-	return &KeepasDBSync{
+	return &KeepassDBSync{
 		LocalKeepassDB:      localDB,
 		RemoteKeepassDBCopy: remoteDBCopy,
 		SyncKeepassDB:       syncDB,
+		dbSettings:          dbSettings,
 	}, nil
 }
 
-func (keepassSync KeepasDBSync) SaveSyncDB(dbSettings *settings.DataBaseSettings) error {
-	syncDBFileObj, err := os.OpenFile(dbSettings.FullSyncFilePath(), os.O_WRONLY, os.ModeAppend)
+func (keepassSync KeepassDBSync) SaveSyncDB() error {
+	syncDBFileObj, err := os.OpenFile(keepassSync.dbSettings.FullSyncFilePath(), os.O_WRONLY, os.ModeAppend)
 	if err != nil {
 		return fmt.Errorf("can't open sync DB file: %v", err)
 	}
@@ -81,7 +83,7 @@ func (keepassSync KeepasDBSync) SaveSyncDB(dbSettings *settings.DataBaseSettings
 	return nil
 }
 
-func (keepasDBSync KeepasDBSync) SyncBases(dbSettings *settings.DataBaseSettings) error {
+func (keepasDBSync KeepassDBSync) SyncBases() error {
 	localEntries := keepasDBSync.LocalKeepassDB.Content.Root.Groups[0].Entries
 	remoteCopyEntries := keepasDBSync.RemoteKeepassDBCopy.Content.Root.Groups[0].Entries
 
@@ -105,7 +107,7 @@ func (keepasDBSync KeepasDBSync) SyncBases(dbSettings *settings.DataBaseSettings
 		if !ok {
 			missingInRemote = append(missingInRemote, localValue)
 		} else {
-			// TODO: LastModificationTime could be nil
+			// TODO: need to check if LastModificationTime could be nil
 			if remoteValue.Times.LastModificationTime.Time.After(localValue.Times.LastModificationTime.Time) {
 				newEntries = append(newEntries, remoteValue)
 			} else {
@@ -125,7 +127,7 @@ func (keepasDBSync KeepasDBSync) SyncBases(dbSettings *settings.DataBaseSettings
 	newEntries = append(newEntries, missingInRemote...)
 	keepasDBSync.SyncKeepassDB.Content.Root.Groups[0].Entries = newEntries
 
-	err := keepasDBSync.SaveSyncDB(dbSettings)
+	err := keepasDBSync.SaveSyncDB()
 	if err != nil {
 		return fmt.Errorf("can't save new keepas DB: %v", err)
 	}
@@ -133,7 +135,78 @@ func (keepasDBSync KeepasDBSync) SyncBases(dbSettings *settings.DataBaseSettings
 	return nil
 }
 
-func InitKeepasDBs(dbSettings *settings.DataBaseSettings, googleDriveController *google_drive.GoogleDriveController) (*KeepasDBSync, error) {
+func (keepasDBSync KeepassDBSync) CleanLocal() error {
+	// check the recent backup first
+	// remove remote db copy
+	// remove original local db file
+	// rename tmp sync db file to original name
+
+	latestBackup, err := utils.GetLatestBackup(keepasDBSync.dbSettings)
+	if err != nil {
+		return err
+	}
+
+	// checking checksum of the latest backup
+	isCheckSumsEqual, err := utils.CompareFileCheckSums(
+		keepasDBSync.dbSettings.FullFilePath(),
+		fmt.Sprintf("%s/%s", keepasDBSync.dbSettings.BackupDirectory, latestBackup.Name()),
+	)
+	if err != nil {
+		return fmt.Errorf("can't compare hashes: %v", err)
+	}
+
+	if !isCheckSumsEqual {
+		return fmt.Errorf("can't find latest backup")
+	}
+
+	// deleting remote db copy
+	err = os.Remove(keepasDBSync.dbSettings.FullRemoteCopyFilePath())
+	if err != nil {
+		return fmt.Errorf("can't remove remote copy: %v", err)
+	}
+	// deleting original db file
+	err = os.Remove(keepasDBSync.dbSettings.FullFilePath())
+	if err != nil {
+		return fmt.Errorf("can't delete local db file: %v", err)
+	}
+	// renaming tmp sync file as original db file
+	err = os.Rename(keepasDBSync.dbSettings.FullSyncFilePath(), keepasDBSync.dbSettings.FullFilePath())
+	if err != nil {
+		return fmt.Errorf("can't rename tmp sync file: %v", err)
+	}
+
+	return nil
+}
+
+func BackupLocalKeepassDB(dbSettings *settings.DataBaseSettings) error {
+	nowTimeStamp := time.Now()
+	dbFilePath := dbSettings.FullFilePath()
+
+	info, err := os.Stat(dbFilePath)
+	if err != nil {
+		return fmt.Errorf("can't get local Keepass BD file info: %v", err)
+	}
+	data, err := os.ReadFile(dbFilePath)
+	if err != nil {
+		return fmt.Errorf("can't read local Keepass DB file: %v", err)
+	}
+
+	err = os.MkdirAll(dbSettings.BackupDirectory, 0700)
+	if err != nil {
+		return fmt.Errorf("can't create backup directory: %v", err)
+	}
+	err = os.WriteFile(fmt.Sprintf("%s/%s-%s", dbSettings.BackupDirectory, nowTimeStamp.Format("2006-01-02T15-04-05"), dbSettings.FileName), data, info.Mode().Perm())
+	if err != nil {
+		return fmt.Errorf("can't write a backup file: %v", err)
+	}
+
+	return nil
+}
+
+func InitKeepassDBs(
+	dbSettings *settings.DataBaseSettings,
+	googleDriveController *google_drive.GoogleDriveController,
+) (*KeepassDBSync, error) {
 	localKeepassDBPath := dbSettings.FullFilePath()
 
 	localKeepassDBObj, err := os.Open(localKeepassDBPath)
@@ -166,35 +239,10 @@ func InitKeepasDBs(dbSettings *settings.DataBaseSettings, googleDriveController 
 	syncDBObj.Seek(0, 0)
 	localKeepassDBObj.Seek(0, 0)
 
-	keepasSync, err := newKeepasDBSync(localKeepassDBObj, remoteDBCopyObj, syncDBObj, dbSettings.Password)
+	keepasSync, err := newKeepassDBSync(localKeepassDBObj, remoteDBCopyObj, syncDBObj, dbSettings)
 	if err != nil {
-		log.Fatalf("can't open one of Keepass DBs: %v", err)
+		return nil, fmt.Errorf("can't open one of Keepass DBs: %v", err)
 	}
 
 	return keepasSync, nil
-}
-
-func BackupLocalKeepassDB(dbSettings *settings.DataBaseSettings) error {
-	nowTimeStamp := time.Now()
-	dbFilePath := dbSettings.FullFilePath()
-
-	info, err := os.Stat(dbFilePath)
-	if err != nil {
-		return fmt.Errorf("can't get local Keepass BD file info: %v", err)
-	}
-	data, err := os.ReadFile(dbFilePath)
-	if err != nil {
-		return fmt.Errorf("can't read local Keepass DB file: %v", err)
-	}
-
-	err = os.MkdirAll(dbSettings.BackupDirectory, 0700)
-	if err != nil {
-		return fmt.Errorf("can't create backup directory: %v", err)
-	}
-	err = os.WriteFile(fmt.Sprintf("%s/%s-%s", dbSettings.BackupDirectory, nowTimeStamp.Format("2006-01-02T15-04-05"), dbSettings.FileName), data, info.Mode().Perm())
-	if err != nil {
-		return fmt.Errorf("can't write a backup file: %v", err)
-	}
-
-	return nil
 }
