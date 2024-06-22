@@ -1,4 +1,4 @@
-package google_drive
+package storage
 
 import (
 	"context"
@@ -13,19 +13,18 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 
+	"google.golang.org/api/drive/v3"
 	"google.golang.org/api/option"
 
-	"google.golang.org/api/drive/v3"
-
-	"keepass_sync/http_server"
 	"keepass_sync/settings"
 )
 
-type GoogleDriveController struct {
-	service *drive.Service
+type googleDriveController struct {
+	service    *drive.Service
+	dbSettings *settings.DataBaseSettings
 }
 
-func (controller *GoogleDriveController) ListFiles(limit int64) (*drive.FileList, error) {
+func (controller *googleDriveController) ListFiles(limit int64) (*drive.FileList, error) {
 	r, err := controller.service.Files.List().PageSize(limit).
 		Fields("nextPageToken, files(id, name, mimeType)").Do()
 	if err != nil {
@@ -34,7 +33,7 @@ func (controller *GoogleDriveController) ListFiles(limit int64) (*drive.FileList
 	return r, nil
 }
 
-func (controller *GoogleDriveController) Find(name string) (*drive.File, error) {
+func (controller *googleDriveController) Find(name string) (*drive.File, error) {
 	query := fmt.Sprintf("name = '%s'and trashed = false", name)
 	fileListResponse, err := controller.service.Files.List().Q(query).Fields("files(id, name, mimeType, parents)").Do()
 
@@ -48,18 +47,19 @@ func (controller *GoogleDriveController) Find(name string) (*drive.File, error) 
 	return fileListResponse.Files[0], nil
 }
 
-func (controller *GoogleDriveController) BackupDBFile(dbSettings *settings.DataBaseSettings) error {
+func (controller *googleDriveController) BackupDBFile() error {
 	backupFolder, err := controller.Find("Backups")
 	if err != nil {
 		return fmt.Errorf("can't find backup folder: %v", err)
 	}
-	keepasDBFile, err := controller.Find(dbSettings.FileName)
+	keepasDBFile, err := controller.Find(controller.dbSettings.FileName)
+
 	if err != nil {
-		return fmt.Errorf("can't find %s: %v", dbSettings.FileName, err)
+		return fmt.Errorf("can't find %s: %v", controller.dbSettings.FileName, err)
 	}
 
 	nowTimeStamp := time.Now()
-	backupName := fmt.Sprintf("%s-%s", nowTimeStamp.Format("2006-01-02T15:04:05"), dbSettings.FileName)
+	backupName := fmt.Sprintf("%s-%s", nowTimeStamp.Format("2006-01-02T15:04:05"), controller.dbSettings.FileName)
 	backupFile := &drive.File{
 		Name:    backupName,
 		Parents: []string{backupFolder.Id},
@@ -73,8 +73,8 @@ func (controller *GoogleDriveController) BackupDBFile(dbSettings *settings.DataB
 	return nil
 }
 
-func (controller *GoogleDriveController) UpdateDBFile(dbSettings *settings.DataBaseSettings) error {
-	filePath := dbSettings.FullFilePath()
+func (controller *googleDriveController) UpdateDBFile() error {
+	filePath := controller.dbSettings.FullFilePath()
 
 	fileObj, err := os.Open(filePath)
 	if err != nil {
@@ -82,7 +82,7 @@ func (controller *GoogleDriveController) UpdateDBFile(dbSettings *settings.DataB
 	}
 	defer fileObj.Close()
 
-	googleDriveDBFile, err := controller.Find(dbSettings.FileName)
+	googleDriveDBFile, err := controller.Find(controller.dbSettings.FileName)
 	if err != nil {
 		return fmt.Errorf("can't find db file on google drive: %v", err)
 	}
@@ -100,8 +100,8 @@ func (controller *GoogleDriveController) UpdateDBFile(dbSettings *settings.DataB
 	return nil
 }
 
-func (controller GoogleDriveController) DownloadRemoteKeepassDB(dbSettings *settings.DataBaseSettings) error {
-	remoteKeepassDb, err := controller.Find(dbSettings.FileName)
+func (controller *googleDriveController) DownloadRemoteKeepassDB() error {
+	remoteKeepassDb, err := controller.Find(controller.dbSettings.FileName)
 	if err != nil {
 		return fmt.Errorf("google drive error: %v", err)
 	}
@@ -110,7 +110,7 @@ func (controller GoogleDriveController) DownloadRemoteKeepassDB(dbSettings *sett
 		return fmt.Errorf("download error: %v", err)
 	}
 
-	localCopy, err := os.Create(dbSettings.FullRemoteCopyFilePath())
+	localCopy, err := os.Create(controller.dbSettings.FullRemoteCopyFilePath())
 	if err != nil {
 		return fmt.Errorf("can't create local copy: %v", err)
 	}
@@ -125,14 +125,14 @@ func (controller GoogleDriveController) DownloadRemoteKeepassDB(dbSettings *sett
 }
 
 // Retrieve a token, saves the token, then returns the generated client.
-func getClient(config *oauth2.Config) (*http.Client, error) {
+func getClient(config *oauth2.Config, settings *settings.AppSettings) (*http.Client, error) {
 	// The file token.json stores the user's access and refresh tokens, and is
 	// created automatically when the authorization flow completes for the first
 	// time.
 	tokFile := "token.json"
 	tok, err := tokenFromFile(tokFile)
 	if err != nil {
-		tok, webTokenErr := getTokenFromWeb(config)
+		tok, webTokenErr := getTokenFromWeb(config, settings)
 		if webTokenErr != nil {
 			return nil, webTokenErr
 		}
@@ -145,10 +145,9 @@ func getClient(config *oauth2.Config) (*http.Client, error) {
 }
 
 // Request a token from the web, then returns the retrieved token.
-func getTokenFromWeb(config *oauth2.Config) (*oauth2.Token, error) {
+func getTokenFromWeb(config *oauth2.Config, settings *settings.AppSettings) (*oauth2.Token, error) {
 	authURL := config.AuthCodeURL("state-token", oauth2.AccessTypeOffline)
 	channel := make(chan string)
-	hs := http_server.HttpServer{Channel: channel}
 
 	// open authURL in browser *specific for macos
 	command := exec.Command("open", authURL)
@@ -157,7 +156,7 @@ func getTokenFromWeb(config *oauth2.Config) (*oauth2.Token, error) {
 		return nil, fmt.Errorf("exec error: %v", err)
 	}
 	// run goroutine to listen for callback
-	go hs.RunHttpServer()
+	go settings.HttpServer.RunHttpServer()
 	// get the code from callback
 	msg := <-channel
 
@@ -189,14 +188,17 @@ func saveToken(path string, token *oauth2.Token) error {
 		return fmt.Errorf("can't cache oauth token: %v", err)
 	}
 	defer f.Close()
-	json.NewEncoder(f).Encode(token)
+	err = json.NewEncoder(f).Encode(token)
+	if err != nil {
+		return err
+	}
 
 	return nil
 }
 
-func NewGoogleDriveController(credentialsPath string) (*GoogleDriveController, error) {
+func newGoogleDriveController(appSettings *settings.AppSettings) (*googleDriveController, error) {
 	ctx := context.Background()
-	b, err := os.ReadFile(credentialsPath)
+	b, err := os.ReadFile(appSettings.StorageCredentials)
 	if err != nil {
 		return nil, fmt.Errorf("can't read client secret file: %v", err)
 	}
@@ -206,7 +208,7 @@ func NewGoogleDriveController(credentialsPath string) (*GoogleDriveController, e
 	if err != nil {
 		return nil, fmt.Errorf("can't parse client secret file to config: %v", err)
 	}
-	client, err := getClient(config)
+	client, err := getClient(config, appSettings)
 	if err != nil {
 		return nil, err
 	}
@@ -216,8 +218,9 @@ func NewGoogleDriveController(credentialsPath string) (*GoogleDriveController, e
 		return nil, err
 	}
 
-	controller := GoogleDriveController{
-		service: srv,
+	controller := googleDriveController{
+		service:    srv,
+		dbSettings: appSettings.DatabaseSettings,
 	}
 
 	return &controller, nil

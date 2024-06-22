@@ -1,0 +1,6 @@
+{
+	"service":     "keepass_scripts",
+	"account":     "keepass_sync",
+	"label":       "keepass_sync",
+	"access_group": "424242.group.com.example"
+}

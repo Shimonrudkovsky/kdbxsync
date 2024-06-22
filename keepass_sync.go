@@ -4,61 +4,58 @@ import (
 	"fmt"
 	"log"
 
-	"keepass_sync/google_drive"
+	"keepass_sync/http"
 	"keepass_sync/keepass"
 	"keepass_sync/keychain"
 	"keepass_sync/settings"
+	"keepass_sync/storage"
 )
+
+type app struct {
+	keepass *keepass.KeepassDBSync
+}
+
+func initApp(credentials string) (*app, error) {
+	channel := make(chan string)
+	httpServer := http.HttpServer{Channel: channel}
+	keychainAccess, err := keychain.NewKeychainAccess("keychain.json")
+	if err != nil {
+		return nil, err
+	}
+	appSetting, err := settings.InitAppSettings(keychainAccess, &httpServer, credentials)
+	if err != nil {
+		return nil, err
+	}
+	storage, err := storage.NewStorage(appSetting)
+	if err != nil {
+		return nil, err
+	}
+	keepass_sync, err := keepass.InitKeepassDBSync(appSetting, storage)
+	if err != nil {
+		return nil, err
+	}
+
+	return &app{keepass: keepass_sync}, nil
+}
 
 func main() {
 	log.SetPrefix("### ")
 	credentials := "client_credentials.json"
-	keychainAccess := keychain.KeychainAccess{
-		Service:     "keepass_scripts",
-		Account:     "keepass_sync",
-		Label:       "keepass_sync",
-		AccessGroup: "424242.group.com.example",
-	}
 
-	dbSettings, err := settings.NewDatabaseSetting(keychainAccess)
+	app, err := initApp(credentials)
 	if err != nil {
-		log.Fatalf("Unable to initialize settings: %v", err)
+		log.Fatalf("Unable to initialize application: %v", err)
 	}
 
-	googleDriveController, err := google_drive.NewGoogleDriveController(credentials)
-	if err != nil {
-		log.Fatalf("Unable initialize google drive: %v", err)
-	}
-
-	// backup first everything else later :)
-	err = keepass.BackupLocalKeepassDB(dbSettings)
-	if err != nil {
-		log.Fatalf("Unable to create backup: %v", err)
-	}
-
-	err = googleDriveController.BackupDBFile(dbSettings)
+	keepass_sync := app.keepass
+	err = keepass_sync.Backup()
 	if err != nil {
 		log.Fatalf("Unable to backup remote base: %v", err)
 	}
 
-	keepasSync, err := keepass.InitKeepassDBs(dbSettings, googleDriveController)
+	err = keepass_sync.Sync()
 	if err != nil {
-		log.Fatalf("Unable to open one of Keepass DBs: %v", err)
-	}
-
-	err = keepasSync.SyncBases()
-	if err != nil {
-		log.Fatalf("Unable to sync bases: %v", err)
-	}
-
-	err = keepasSync.CleanLocal()
-	if err != nil {
-		log.Fatalf("Unable to clean tmp files: %v", err)
-	}
-
-	err = googleDriveController.UpdateDBFile(dbSettings)
-	if err != nil {
-		log.Fatalf("Unable to upload Keepass DB file to google drive: %v", err)
+		log.Fatalf("Unable to sync keepass bases: %v", err)
 	}
 
 	fmt.Print("Done")
