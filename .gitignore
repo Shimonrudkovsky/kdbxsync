@@ -1,3 +1,4 @@
 token.json
 client_credentials.json
-^kdbxsync$
+bin/*
+.golangci.yml
