@@ -104,11 +104,11 @@ func (keychainAccess Access) GetPassword(callbackHTTPServer *http.Server) (strin
 			return "", fmt.Errorf("can't exec: %w", commandErr)
 		}
 		// get the code from callback
-		pass = <-callbackHTTPServer.ReturnChannel
 		err = <-callbackHTTPServer.ErrorChannel
 		if err != nil {
 			return "", fmt.Errorf("goruotine error: %w", err)
 		}
+		pass = <-callbackHTTPServer.ReturnChannel
 		keychainError := keychainAccess.newKeychainPass(pass)
 		if keychainError != nil {
 			return "", fmt.Errorf("can't add pass to keychain: %w", err)

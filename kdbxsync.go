@@ -40,7 +40,7 @@ func main() {
 	log.SetPrefix("### ")
 	credentials := "client_credentials.json"
 
-	app, err := initApp(credentials, 303, "keychain.json")
+	app, err := initApp(credentials, 3030, "keychain.json")
 	if err != nil {
 		log.Fatalf("Unable to initialize application: %v", err)
 	}
