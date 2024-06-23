@@ -2,19 +2,20 @@ package keepass
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 	"time"
 
-	"keepass_sync/settings"
-	"keepass_sync/storage"
+	"kdbxsync/settings"
+	"kdbxsync/storage"
 
 	"github.com/tobischo/gokeepasslib/v3"
 )
 
-type KeepassDBSync struct {
+type DBSync struct {
 	localKeepassDB      *gokeepasslib.Database
 	remoteKeepassDBCopy *gokeepasslib.Database
 	syncKeepassDB       *gokeepasslib.Database
@@ -28,7 +29,7 @@ func newKeepassDBSync(
 	tmpSyncFileObj *os.File,
 	settings *settings.AppSettings,
 	storage *storage.Storage,
-) (*KeepassDBSync, error) {
+) (*DBSync, error) {
 	// new db instances to decode files into
 	localDB := gokeepasslib.NewDatabase()
 	remoteDBCopy := gokeepasslib.NewDatabase()
@@ -42,34 +43,34 @@ func newKeepassDBSync(
 	// decoding local remote copy and tmp bases
 	err := gokeepasslib.NewDecoder(localDBFileObj).Decode(localDB)
 	if err != nil {
-		return nil, fmt.Errorf("can't initialize local Keepass DB: %v", err)
+		return nil, fmt.Errorf("can't initialize local Keepass DB: %w", err)
 	}
 	err = gokeepasslib.NewDecoder(remoteDBCopyFileObj).Decode(remoteDBCopy)
 	if err != nil {
-		return nil, fmt.Errorf("can't initialize remote Keepass DB copy: %v", err)
+		return nil, fmt.Errorf("can't initialize remote Keepass DB copy: %w", err)
 	}
 	err = gokeepasslib.NewDecoder(tmpSyncFileObj).Decode(syncDB)
 	if err != nil {
-		return nil, fmt.Errorf("can't initialize tmp sync Keepass DB: %v", err)
+		return nil, fmt.Errorf("can't initialize tmp sync Keepass DB: %w", err)
 	}
 
 	err = localDB.UnlockProtectedEntries()
 	defer localDB.LockProtectedEntries()
 	if err != nil {
-		return nil, fmt.Errorf("can't unlock protected entries: %v", err)
+		return nil, fmt.Errorf("can't unlock protected entries: %w", err)
 	}
 	err = remoteDBCopy.UnlockProtectedEntries()
 	defer remoteDBCopy.LockProtectedEntries()
 	if err != nil {
-		return nil, fmt.Errorf("can't unlock protected entries: %v", err)
+		return nil, fmt.Errorf("can't unlock protected entries: %w", err)
 	}
 	err = syncDB.UnlockProtectedEntries()
 	defer syncDB.LockProtectedEntries()
 	if err != nil {
-		return nil, fmt.Errorf("can't unlock protected entries: %v", err)
+		return nil, fmt.Errorf("can't unlock protected entries: %w", err)
 	}
 
-	return &KeepassDBSync{
+	return &DBSync{
 		localKeepassDB:      localDB,
 		remoteKeepassDBCopy: remoteDBCopy,
 		syncKeepassDB:       syncDB,
@@ -78,17 +79,24 @@ func newKeepassDBSync(
 	}, nil
 }
 
-func (keepassSync *KeepassDBSync) SaveSyncDB() error {
-	syncDBFileObj, err := os.OpenFile(keepassSync.settings.DatabaseSettings.FullSyncFilePath(), os.O_WRONLY, os.ModeAppend)
+func (keepassDBSync *DBSync) SaveSyncDB() error {
+	syncDBFileObj, err := os.OpenFile(
+		keepassDBSync.settings.DatabaseSettings.FullSyncFilePath(),
+		os.O_WRONLY,
+		os.ModeAppend,
+	)
 	if err != nil {
-		return fmt.Errorf("can't open sync DB file: %v", err)
+		return fmt.Errorf("can't open sync DB file: %w", err)
 	}
 	defer syncDBFileObj.Close()
 
-	keepassSync.syncKeepassDB.LockProtectedEntries()
+	err = keepassDBSync.syncKeepassDB.LockProtectedEntries()
+	if err != nil {
+		return err
+	}
 	keepassEncoder := gokeepasslib.NewEncoder(syncDBFileObj)
-	if err := keepassEncoder.Encode(keepassSync.syncKeepassDB); err != nil {
-		return fmt.Errorf("can't encode sync keepass DB: %v", err)
+	if err = keepassEncoder.Encode(keepassDBSync.syncKeepassDB); err != nil {
+		return fmt.Errorf("can't encode sync keepass DB: %w", err)
 	}
 	err = syncDBFileObj.Sync()
 	if err != nil {
@@ -98,7 +106,7 @@ func (keepassSync *KeepassDBSync) SaveSyncDB() error {
 	return nil
 }
 
-func (keepassDBSync *KeepassDBSync) syncBases() error {
+func (keepassDBSync *DBSync) syncBases() error {
 	localEntries := keepassDBSync.localKeepassDB.Content.Root.Groups[0].Entries
 	remoteCopyEntries := keepassDBSync.remoteKeepassDBCopy.Content.Root.Groups[0].Entries
 
@@ -144,13 +152,13 @@ func (keepassDBSync *KeepassDBSync) syncBases() error {
 
 	err := keepassDBSync.SaveSyncDB()
 	if err != nil {
-		return fmt.Errorf("can't save new keepas DB: %v", err)
+		return fmt.Errorf("can't save new keepas DB: %w", err)
 	}
 
 	return nil
 }
 
-func (keepassDBSync *KeepassDBSync) cleanLocal() error {
+func (keepassDBSync *DBSync) cleanLocal() error {
 	// check the recent backup first
 	// remove remote db copy
 	// remove original local db file
@@ -167,33 +175,36 @@ func (keepassDBSync *KeepassDBSync) cleanLocal() error {
 		fmt.Sprintf("%s/%s", keepassDBSync.settings.DatabaseSettings.BackupDirectory, latestBackup.Name()),
 	)
 	if err != nil {
-		return fmt.Errorf("can't compare hashes: %v", err)
+		return fmt.Errorf("can't compare hashes: %w", err)
 	}
 
 	if !isCheckSumsEqual {
-		return fmt.Errorf("can't find latest backup")
+		return errors.New("can't find latest backup")
 	}
 
 	// deleting remote db copy
 	err = os.Remove(keepassDBSync.settings.DatabaseSettings.FullRemoteCopyFilePath())
 	if err != nil {
-		return fmt.Errorf("can't remove remote copy: %v", err)
+		return fmt.Errorf("can't remove remote copy: %w", err)
 	}
 	// deleting original db file
 	err = os.Remove(keepassDBSync.settings.DatabaseSettings.FullFilePath())
 	if err != nil {
-		return fmt.Errorf("can't delete local db file: %v", err)
+		return fmt.Errorf("can't delete local db file: %w", err)
 	}
 	// renaming tmp sync file as original db file
-	err = os.Rename(keepassDBSync.settings.DatabaseSettings.FullSyncFilePath(), keepassDBSync.settings.DatabaseSettings.FullFilePath())
+	err = os.Rename(
+		keepassDBSync.settings.DatabaseSettings.FullSyncFilePath(),
+		keepassDBSync.settings.DatabaseSettings.FullFilePath(),
+	)
 	if err != nil {
-		return fmt.Errorf("can't rename tmp sync file: %v", err)
+		return fmt.Errorf("can't rename tmp sync file: %w", err)
 	}
 
 	return nil
 }
 
-func (keepassDBSync *KeepassDBSync) Sync() error {
+func (keepassDBSync *DBSync) Sync() error {
 	err := keepassDBSync.syncBases()
 	if err != nil {
 		return err
@@ -210,14 +221,14 @@ func (keepassDBSync *KeepassDBSync) Sync() error {
 	return nil
 }
 
-func (keepassDBSync *KeepassDBSync) Backup() error {
+func (keepassDBSync *DBSync) Backup() error {
 	err := backupLocalKeepassDB(keepassDBSync.settings.DatabaseSettings)
 	if err != nil {
-		return fmt.Errorf("can't create backup: %v", err)
+		return fmt.Errorf("can't create backup: %w", err)
 	}
 	err = keepassDBSync.storage.BackupDBFile()
 	if err != nil {
-		return fmt.Errorf("can't backup remote base: %v", err)
+		return fmt.Errorf("can't backup remote base: %w", err)
 	}
 
 	return nil
@@ -229,53 +240,59 @@ func backupLocalKeepassDB(dbSettings *settings.DataBaseSettings) error {
 
 	info, err := os.Stat(dbFilePath)
 	if err != nil {
-		return fmt.Errorf("can't get local Keepass BD file info: %v", err)
+		return fmt.Errorf("can't get local Keepass BD file info: %w", err)
 	}
 	data, err := os.ReadFile(dbFilePath)
 	if err != nil {
-		return fmt.Errorf("can't read local Keepass DB file: %v", err)
+		return fmt.Errorf("can't read local Keepass DB file: %w", err)
 	}
 
 	err = os.MkdirAll(dbSettings.BackupDirectory, 0700)
 	if err != nil {
-		return fmt.Errorf("can't create backup directory: %v", err)
+		return fmt.Errorf("can't create backup directory: %w", err)
 	}
-	err = os.WriteFile(fmt.Sprintf("%s/%s-%s", dbSettings.BackupDirectory, nowTimeStamp.Format("2006-01-02T15-04-05"), dbSettings.FileName), data, info.Mode().Perm())
+	backupFilePath := fmt.Sprintf(
+		"%s/%s-%s",
+		dbSettings.BackupDirectory,
+		nowTimeStamp.Format("2006-01-02T15-04-05"),
+		dbSettings.FileName,
+	)
+	err = os.WriteFile(backupFilePath, data, info.Mode().Perm())
 	if err != nil {
-		return fmt.Errorf("can't write a backup file: %v", err)
+		return fmt.Errorf("can't write a backup file: %w", err)
 	}
 
 	return nil
 }
 
-func InitKeepassDBSync(settings *settings.AppSettings, storage *storage.Storage) (*KeepassDBSync, error) {
+func InitKeepassDBSync(settings *settings.AppSettings, storage *storage.Storage) (*DBSync, error) {
 	localKeepassDBPath := settings.DatabaseSettings.FullFilePath()
 
 	localKeepassDBObj, err := os.Open(localKeepassDBPath)
 	if err != nil {
-		return nil, fmt.Errorf("can't open local Keepass DB file: %v", err)
+		return nil, fmt.Errorf("can't open local Keepass DB file: %w", err)
 	}
 	defer localKeepassDBObj.Close()
 
 	err = storage.DownloadRemoteKeepassDB()
 	if err != nil {
-		return nil, fmt.Errorf("can't download remote Keepass DB file: %v", err)
+		return nil, fmt.Errorf("can't download remote Keepass DB file: %w", err)
 	}
 
 	remoteDBCopyObj, err := os.Open(settings.DatabaseSettings.FullRemoteCopyFilePath())
 	if err != nil {
-		return nil, fmt.Errorf("can't open remote DB copy: %v", err)
+		return nil, fmt.Errorf("can't open remote DB copy: %w", err)
 	}
 	defer remoteDBCopyObj.Close()
 
 	syncDBObj, err := os.Create(settings.DatabaseSettings.FullSyncFilePath())
 	if err != nil {
-		return nil, fmt.Errorf("can't create sync db file: %v", err)
+		return nil, fmt.Errorf("can't create sync db file: %w", err)
 	}
 	defer syncDBObj.Close()
 	_, err = io.Copy(syncDBObj, localKeepassDBObj)
 	if err != nil {
-		return nil, fmt.Errorf("can't copy local db file to sync db file: %v", err)
+		return nil, fmt.Errorf("can't copy local db file to sync db file: %w", err)
 	}
 	err = syncDBObj.Sync()
 	if err != nil {
@@ -292,7 +309,7 @@ func InitKeepassDBSync(settings *settings.AppSettings, storage *storage.Storage)
 
 	keepasSync, err := newKeepassDBSync(localKeepassDBObj, remoteDBCopyObj, syncDBObj, settings, storage)
 	if err != nil {
-		return nil, fmt.Errorf("can't open one of Keepass DBs: %v", err)
+		return nil, fmt.Errorf("can't open one of Keepass DBs: %w", err)
 	}
 
 	return keepasSync, nil
@@ -301,11 +318,11 @@ func InitKeepassDBSync(settings *settings.AppSettings, storage *storage.Storage)
 func CompareFileCheckSums(filePath1 string, filePath2 string) (bool, error) {
 	f1, err := os.Open(filePath1)
 	if err != nil {
-		return false, fmt.Errorf("can't open file: %v", err)
+		return false, fmt.Errorf("can't open file: %w", err)
 	}
 	f2, err := os.Open(filePath2)
 	if err != nil {
-		return false, fmt.Errorf("can't open file: %v", err)
+		return false, fmt.Errorf("can't open file: %w", err)
 	}
 	defer f1.Close()
 	defer f2.Close()
@@ -315,11 +332,11 @@ func CompareFileCheckSums(filePath1 string, filePath2 string) (bool, error) {
 
 	_, err = io.Copy(h1, f1)
 	if err != nil {
-		return false, fmt.Errorf("can't copy file data: %v", err)
+		return false, fmt.Errorf("can't copy file data: %w", err)
 	}
 	_, err = io.Copy(h2, f2)
 	if err != nil {
-		return false, fmt.Errorf("can't copy file data: %v", err)
+		return false, fmt.Errorf("can't copy file data: %w", err)
 	}
 
 	return string(h1.Sum(nil)[:]) == string(h2.Sum(nil)[:]), nil
@@ -328,7 +345,7 @@ func CompareFileCheckSums(filePath1 string, filePath2 string) (bool, error) {
 func GetLatestBackup(dbSettings *settings.DataBaseSettings) (os.DirEntry, error) {
 	fileList, err := os.ReadDir(dbSettings.BackupDirectory)
 	if err != nil {
-		return nil, fmt.Errorf("can't read directory: %v", err)
+		return nil, fmt.Errorf("can't read directory: %w", err)
 	}
 
 	latestFileIdx := -1
@@ -351,7 +368,7 @@ func GetLatestBackup(dbSettings *settings.DataBaseSettings) (os.DirEntry, error)
 		}
 	}
 	if latestFileIdx == -1 {
-		return nil, fmt.Errorf("can't find the latest file")
+		return nil, errors.New("can't find the latest file")
 	}
 
 	return fileList[latestFileIdx], nil

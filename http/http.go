@@ -2,15 +2,16 @@ package http
 
 import (
 	"fmt"
-	"log"
 	"net/http"
 )
 
-type HttpServer struct {
-	Channel chan string
+type Server struct {
+	port          uint16
+	ReturnChannel chan string
+	ErrorChannel  chan error
 }
 
-func missingPass(w http.ResponseWriter, r *http.Request) {
+func missingPass(w http.ResponseWriter, _ *http.Request) {
 	htmlText := `
 	<html>
 		<body>
@@ -28,19 +29,23 @@ func missingPass(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, htmlText)
 }
 
-func (hs *HttpServer) RunHttpServer() error {
+func (hs *Server) RunHTTPServer() {
 	// listen on port for callback and return code to the channel
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		hs.Channel <- r.URL.Query()["code"][0]
+	http.HandleFunc("/", func(_ http.ResponseWriter, r *http.Request) {
+		hs.ReturnChannel <- r.URL.Query()["code"][0]
 	})
-	http.HandleFunc("/get_pass", func(w http.ResponseWriter, r *http.Request) {
-		hs.Channel <- r.URL.Query()["pass"][0]
+	http.HandleFunc("/get_pass", func(_ http.ResponseWriter, r *http.Request) {
+		hs.ReturnChannel <- r.URL.Query()["pass"][0]
 	})
 	http.HandleFunc("/missing_pass", missingPass)
-	err := http.ListenAndServe(":3030", nil)
+	err := http.ListenAndServe(fmt.Sprintf(":%d", hs.port), nil)
 	if err != nil {
-		log.Fatalf("https server error in gorutine: %v", err)
+		hs.ErrorChannel <- fmt.Errorf("https server error in gorutine: %w", err)
 	}
+}
 
-	return nil
+func NewHTTPServer(port uint16) *Server {
+	rChannel := make(chan string)
+	eChannel := make(chan error)
+	return &Server{port: port, ReturnChannel: rChannel, ErrorChannel: eChannel}
 }

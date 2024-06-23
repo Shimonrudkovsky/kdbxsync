@@ -1,7 +1,7 @@
 package storage
 
 import (
-	"keepass_sync/settings"
+	"kdbxsync/settings"
 )
 
 type Storage struct {

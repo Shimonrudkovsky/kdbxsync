@@ -1,4 +1,4 @@
-module keepass_sync
+module kdbxsync
 
 go 1.21
 

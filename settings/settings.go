@@ -1,9 +1,10 @@
 package settings
 
 import (
+	"errors"
 	"fmt"
-	"keepass_sync/http"
-	"keepass_sync/keychain"
+	"kdbxsync/http"
+	"kdbxsync/keychain"
 	"os"
 )
 
@@ -46,27 +47,22 @@ func (dbSettings *DataBaseSettings) FullSyncFilePath() string {
 	return fmt.Sprintf("%s/%s", dbSettings.Directory, dbSettings.SyncDBName)
 }
 
-func getSysEnv(sysEnvName string) (string, error) {
-	sysEnv := os.Getenv(sysEnvName)
-	if sysEnv == "" {
-		return "", fmt.Errorf("sysenv %s  not found or empty", sysEnvName)
-	}
-	return sysEnv, nil
-}
-
-func NewDatabaseSetting(keychainAccess keychain.KeychainAccess, httpServer *http.HttpServer) (*DataBaseSettings, error) {
+func NewDatabaseSetting(
+	keychainAccess keychain.Access,
+	httpServer *http.Server,
+) (*DataBaseSettings, error) {
 	pass, err := keychainAccess.GetPassword(httpServer)
 	if err != nil {
-		return nil, fmt.Errorf("can't get keepass db password: %v", err)
+		return nil, fmt.Errorf("can't get keepass db password: %w", err)
 	}
 
 	directory := os.Getenv("KEEPASS_DB_DIRECTORY")
 	dbFileName := os.Getenv("KEEPASS_DB_FILE_NAME")
 	if directory == "" {
-		return nil, fmt.Errorf("can't find KEEPASS_DB_DIRECTORY variable")
+		return nil, errors.New("can't find KEEPASS_DB_DIRECTORY variable")
 	}
 	if dbFileName == "" {
-		return nil, fmt.Errorf("can't find KEEPASS_DB_FILE_NAME variable")
+		return nil, errors.New("can't find KEEPASS_DB_FILE_NAME variable")
 	}
 
 	dbSettings := DataBaseSettings{
@@ -82,19 +78,23 @@ func NewDatabaseSetting(keychainAccess keychain.KeychainAccess, httpServer *http
 }
 
 type AppSettings struct {
-	HttpServer         *http.HttpServer
+	HTTPServer         *http.Server
 	DatabaseSettings   *DataBaseSettings
 	StorageCredentials string
 }
 
-func InitAppSettings(keychainAccess *keychain.KeychainAccess, httpServer *http.HttpServer, storageCredentials string) (*AppSettings, error) {
+func InitAppSettings(
+	keychainAccess *keychain.Access,
+	httpServer *http.Server,
+	storageCredentials string,
+) (*AppSettings, error) {
 	appSettings := AppSettings{
-		HttpServer:         httpServer,
+		HTTPServer:         httpServer,
 		StorageCredentials: storageCredentials,
 	}
 	pass, err := keychainAccess.GetPassword(httpServer)
 	if err != nil {
-		return nil, fmt.Errorf("can't get keepass db password: %v", err)
+		return nil, fmt.Errorf("can't get keepass db password: %w", err)
 	}
 
 	envVars, err := getEnvs("KEEPASS_DB_DIRECTORY", "KEEPASS_DB_FILE_NAME")
