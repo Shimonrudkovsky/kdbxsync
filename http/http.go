@@ -7,6 +7,11 @@ import (
 	"time"
 )
 
+type HTTPServer interface {
+	RunHTTPServer()
+	ReadChannels() (string, error)
+}
+
 type Server struct {
 	port          uint16
 	ReturnChannel chan string
@@ -49,7 +54,7 @@ func (hs *Server) RunHTTPServer() {
 			hs.ErrorChannel <- errors.New("can't get a pass from callback")
 		}
 		hs.ErrorChannel <- nil
-		hs.ReturnChannel <- r.URL.Query()["pass"][0]
+		hs.ReturnChannel <- pass
 	})
 	http.HandleFunc("/missing_pass", missingPass)
 	server := http.Server{
@@ -60,6 +65,16 @@ func (hs *Server) RunHTTPServer() {
 	if err != nil {
 		hs.ErrorChannel <- fmt.Errorf("https server error in goroutine: %w", err)
 	}
+}
+
+func (hs *Server) ReadChannels() (string, error) {
+	err := <-hs.ErrorChannel
+	if err != nil {
+		return "", fmt.Errorf("goruotine error: %w", err)
+	}
+	result := <-hs.ReturnChannel
+
+	return result, err
 }
 
 func NewHTTPServer(port uint16) *Server {

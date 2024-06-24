@@ -9,21 +9,21 @@ import (
 )
 
 type EnvVars struct {
-	directory  string
-	dbFileName string
+	Directory  string
+	DBFileName string
 }
 
-func getEnvs(directoryEnv string, dbFileNameEnv string) (*EnvVars, error) {
+func GetEnvs(directoryEnv string, dbFileNameEnv string) (*EnvVars, error) {
 	directory := os.Getenv(directoryEnv)
 	dbFileName := os.Getenv(dbFileNameEnv)
 	if directory == "" {
-		return nil, fmt.Errorf("can't find %s variable", directoryEnv)
+		return nil, errors.New("can't find directory variable")
 	}
 	if dbFileName == "" {
-		return nil, fmt.Errorf("can't find %s variable", dbFileName)
+		return nil, errors.New("can't find db file name variable")
 	}
 
-	return &EnvVars{directory: directory, dbFileName: dbFileName}, nil
+	return &EnvVars{Directory: directory, DBFileName: dbFileName}, nil
 }
 
 type DataBaseSettings struct {
@@ -48,44 +48,40 @@ func (dbSettings *DataBaseSettings) FullSyncFilePath() string {
 }
 
 func NewDatabaseSetting(
-	keychainAccess keychain.Access,
-	httpServer *http.Server,
+	keychainAccess keychain.KeyStorage,
+	httpServer http.HTTPServer,
 ) (*DataBaseSettings, error) {
 	pass, err := keychainAccess.GetPassword(httpServer)
 	if err != nil {
 		return nil, fmt.Errorf("can't get keepass db password: %w", err)
 	}
 
-	directory := os.Getenv("KEEPASS_DB_DIRECTORY")
-	dbFileName := os.Getenv("KEEPASS_DB_FILE_NAME")
-	if directory == "" {
-		return nil, errors.New("can't find KEEPASS_DB_DIRECTORY variable")
-	}
-	if dbFileName == "" {
-		return nil, errors.New("can't find KEEPASS_DB_FILE_NAME variable")
+	envVars, err := GetEnvs("KEEPASS_DB_DIRECTORY", "KEEPASS_DB_FILE_NAME")
+	if err != nil {
+		return nil, err
 	}
 
 	dbSettings := DataBaseSettings{
-		Directory:        directory,
-		FileName:         dbFileName,
+		Directory:        envVars.Directory,
+		FileName:         envVars.DBFileName,
 		Password:         pass,
 		RemoteCopyPrefix: "remote_copy",
 		SyncDBName:       "tmp.kdbx",
-		BackupDirectory:  fmt.Sprintf("%s/backups", directory),
+		BackupDirectory:  fmt.Sprintf("%s/backups", envVars.Directory),
 	}
 
 	return &dbSettings, nil
 }
 
 type AppSettings struct {
-	HTTPServer         *http.Server
+	HTTPServer         http.HTTPServer
 	DatabaseSettings   *DataBaseSettings
 	StorageCredentials string
 }
 
 func InitAppSettings(
 	keychainAccess *keychain.Access,
-	httpServer *http.Server,
+	httpServer http.HTTPServer,
 	storageCredentials string,
 ) (*AppSettings, error) {
 	appSettings := AppSettings{
@@ -97,18 +93,18 @@ func InitAppSettings(
 		return nil, fmt.Errorf("can't get keepass db password: %w", err)
 	}
 
-	envVars, err := getEnvs("KEEPASS_DB_DIRECTORY", "KEEPASS_DB_FILE_NAME")
+	envVars, err := GetEnvs("KEEPASS_DB_DIRECTORY", "KEEPASS_DB_FILE_NAME")
 	if err != nil {
 		return nil, err
 	}
 
 	appSettings.DatabaseSettings = &DataBaseSettings{
-		Directory:        envVars.directory,
-		FileName:         envVars.dbFileName,
+		Directory:        envVars.Directory,
+		FileName:         envVars.DBFileName,
 		Password:         pass,
 		RemoteCopyPrefix: "remote_copy",
 		SyncDBName:       "tmp.kdbx",
-		BackupDirectory:  fmt.Sprintf("%s/backups", envVars.directory),
+		BackupDirectory:  fmt.Sprintf("%s/backups", envVars.Directory),
 	}
 
 	return &appSettings, nil

@@ -12,6 +12,10 @@ import (
 	"kdbxsync/http"
 )
 
+type KeyStorage interface {
+	GetPassword(http.HTTPServer) (string, error)
+}
+
 type Access struct {
 	Service     string `json:"service"`
 	Account     string `json:"account"`
@@ -33,25 +37,6 @@ func (keychainAccess *Access) validateFields() error {
 		return errors.New("accessGroup key is empty")
 	}
 	return nil
-}
-
-func readKeychaiAccess(path string) (*Access, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, fmt.Errorf("can't read keychain access: %w", err)
-	}
-	kechainAccess := &Access{}
-	defer f.Close()
-	err = json.NewDecoder(f).Decode(kechainAccess)
-	if err != nil {
-		return nil, err
-	}
-	err = kechainAccess.validateFields()
-	if err != nil {
-		return nil, fmt.Errorf("json error: %w", err)
-	}
-
-	return kechainAccess, nil
 }
 
 func (keychainAccess Access) newKeychainPass(pass string) error {
@@ -86,7 +71,7 @@ func (keychainAccess Access) getKeychainPass() (string, error) {
 	return string(resp[:]), nil
 }
 
-func (keychainAccess Access) GetPassword(callbackHTTPServer *http.Server) (string, error) {
+func (keychainAccess Access) GetPassword(callbackHTTPServer http.HTTPServer) (string, error) {
 	pass, err := keychainAccess.getKeychainPass()
 	if err != nil {
 		return "", fmt.Errorf("can't get pass: %w", err)
@@ -98,17 +83,15 @@ func (keychainAccess Access) GetPassword(callbackHTTPServer *http.Server) (strin
 		go callbackHTTPServer.RunHTTPServer()
 		// open localhost in browser to get pass from user *specific for macos
 		command := exec.Command("open", url)
-		// time.Sleep(10 * time.Second)
 		commandErr := command.Run()
 		if commandErr != nil {
 			return "", fmt.Errorf("can't exec: %w", commandErr)
 		}
 		// get the code from callback
-		err = <-callbackHTTPServer.ErrorChannel
+		pass, err = callbackHTTPServer.ReadChannels()
 		if err != nil {
-			return "", fmt.Errorf("goruotine error: %w", err)
+			return "", err
 		}
-		pass = <-callbackHTTPServer.ReturnChannel
 		keychainError := keychainAccess.newKeychainPass(pass)
 		if keychainError != nil {
 			return "", fmt.Errorf("can't add pass to keychain: %w", err)
@@ -116,6 +99,25 @@ func (keychainAccess Access) GetPassword(callbackHTTPServer *http.Server) (strin
 	}
 
 	return pass, nil
+}
+
+func readKeychaiAccess(path string) (*Access, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("can't read keychain access: %w", err)
+	}
+	defer f.Close()
+	kechainAccess := &Access{}
+	err = json.NewDecoder(f).Decode(kechainAccess)
+	if err != nil {
+		return nil, err
+	}
+	err = kechainAccess.validateFields()
+	if err != nil {
+		return nil, fmt.Errorf("json error: %w", err)
+	}
+
+	return kechainAccess, nil
 }
 
 func NewKeychainAccess(path string) (*Access, error) {

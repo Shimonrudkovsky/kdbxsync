@@ -164,11 +164,10 @@ func getTokenFromWeb(config *oauth2.Config, settings *settings.AppSettings) (*oa
 	// run goroutine to listen for callback
 	go settings.HTTPServer.RunHTTPServer()
 	// get the code from callback
-	err = <-settings.HTTPServer.ErrorChannel
+	msg, err := settings.HTTPServer.ReadChannels()
 	if err != nil {
-		return nil, fmt.Errorf("goroutine error: %w", err)
+		return nil, err
 	}
-	msg := <-settings.HTTPServer.ReturnChannel
 
 	tok, err := config.Exchange(context.TODO(), msg)
 	if err != nil {
