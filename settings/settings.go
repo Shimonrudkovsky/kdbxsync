@@ -3,10 +3,18 @@ package settings
 import (
 	"errors"
 	"fmt"
-	"kdbxsync/http"
 	"kdbxsync/keychain"
 	"os"
 )
+
+type HTTPServer interface {
+	RunHTTPServer()
+	ReadChannels() (string, error)
+}
+
+type KeyStorage interface {
+	GetPassword(HTTPServer) (string, error)
+}
 
 type EnvVars struct {
 	Directory  string
@@ -48,8 +56,8 @@ func (dbSettings *DataBaseSettings) FullSyncFilePath() string {
 }
 
 func NewDatabaseSetting(
-	keychainAccess keychain.KeyStorage,
-	httpServer http.HTTPServer,
+	keychainAccess KeyStorage,
+	httpServer HTTPServer,
 ) (*DataBaseSettings, error) {
 	pass, err := keychainAccess.GetPassword(httpServer)
 	if err != nil {
@@ -74,14 +82,14 @@ func NewDatabaseSetting(
 }
 
 type AppSettings struct {
-	HTTPServer         http.HTTPServer
+	HTTPServer         HTTPServer
 	DatabaseSettings   *DataBaseSettings
 	StorageCredentials string
 }
 
 func InitAppSettings(
 	keychainAccess *keychain.Access,
-	httpServer http.HTTPServer,
+	httpServer HTTPServer,
 	storageCredentials string,
 ) (*AppSettings, error) {
 	appSettings := AppSettings{

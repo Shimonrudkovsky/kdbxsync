@@ -6,7 +6,6 @@ import (
 	"os"
 	"testing"
 
-	"kdbxsync/http"
 	"kdbxsync/settings"
 
 	"github.com/stretchr/testify/assert"
@@ -17,7 +16,7 @@ type FakeKeychainAccess struct {
 	err      error
 }
 
-func (f *FakeKeychainAccess) GetPassword(server http.HTTPServer) (string, error) {
+func (f *FakeKeychainAccess) GetPassword(server settings.HTTPServer) (string, error) {
 	return f.password, f.err
 }
 

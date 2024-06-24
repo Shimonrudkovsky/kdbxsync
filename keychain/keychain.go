@@ -8,12 +8,11 @@ import (
 	"os/exec"
 
 	"github.com/keybase/go-keychain"
-
-	"kdbxsync/http"
 )
 
-type KeyStorage interface {
-	GetPassword(http.HTTPServer) (string, error)
+type HTTPServer interface {
+	RunHTTPServer()
+	ReadChannels() (string, error)
 }
 
 type Access struct {
@@ -71,7 +70,7 @@ func (keychainAccess Access) getKeychainPass() (string, error) {
 	return string(resp[:]), nil
 }
 
-func (keychainAccess Access) GetPassword(callbackHTTPServer http.HTTPServer) (string, error) {
+func (keychainAccess Access) GetPassword(callbackHTTPServer HTTPServer) (string, error) {
 	pass, err := keychainAccess.getKeychainPass()
 	if err != nil {
 		return "", fmt.Errorf("can't get pass: %w", err)

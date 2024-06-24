@@ -10,25 +10,30 @@ import (
 	"time"
 
 	"kdbxsync/settings"
-	"kdbxsync/storage"
 
 	"github.com/tobischo/gokeepasslib/v3"
 )
+
+type Storage interface {
+	UpdateDBFile() error
+	DownloadRemoteKeepassDB() error
+	BackupDBFile() error
+}
 
 type DBSync struct {
 	localKeepassDB      *gokeepasslib.Database
 	remoteKeepassDBCopy *gokeepasslib.Database
 	syncKeepassDB       *gokeepasslib.Database
-	storage             *storage.Storage
+	storage             Storage
 	settings            *settings.AppSettings
 }
 
-func newKeepassDBSync(
-	localDBFileObj *os.File,
-	remoteDBCopyFileObj *os.File,
-	tmpSyncFileObj *os.File,
+func NewKeepassDBSync(
+	localDBFileObj io.Reader,
+	remoteDBCopyFileObj io.Reader,
+	tmpSyncFileObj io.Reader,
+	storage Storage,
 	settings *settings.AppSettings,
-	storage *storage.Storage,
 ) (*DBSync, error) {
 	// new db instances to decode files into
 	localDB := gokeepasslib.NewDatabase()
@@ -265,7 +270,7 @@ func backupLocalKeepassDB(dbSettings *settings.DataBaseSettings) error {
 	return nil
 }
 
-func InitKeepassDBSync(settings *settings.AppSettings, storage *storage.Storage) (*DBSync, error) {
+func InitKeepassDBSync(settings *settings.AppSettings, storage Storage) (*DBSync, error) {
 	localKeepassDBPath := settings.DatabaseSettings.FullFilePath()
 
 	localKeepassDBObj, err := os.Open(localKeepassDBPath)
@@ -307,7 +312,7 @@ func InitKeepassDBSync(settings *settings.AppSettings, storage *storage.Storage)
 		return nil, err
 	}
 
-	keepasSync, err := newKeepassDBSync(localKeepassDBObj, remoteDBCopyObj, syncDBObj, settings, storage)
+	keepasSync, err := NewKeepassDBSync(localKeepassDBObj, remoteDBCopyObj, syncDBObj, storage, settings)
 	if err != nil {
 		return nil, fmt.Errorf("can't open one of Keepass DBs: %w", err)
 	}

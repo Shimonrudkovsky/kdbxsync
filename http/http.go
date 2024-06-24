@@ -7,11 +7,6 @@ import (
 	"time"
 )
 
-type HTTPServer interface {
-	RunHTTPServer()
-	ReadChannels() (string, error)
-}
-
 type Server struct {
 	port          uint16
 	ReturnChannel chan string
@@ -38,41 +33,45 @@ func missingPass(w http.ResponseWriter, _ *http.Request) {
 
 func (hs *Server) RunHTTPServer() {
 	// listen on port for callback and return code to the channel
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/", func(_ http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		code := q.Get("code")
 		if code == "" {
+			hs.ReturnChannel <- ""
 			hs.ErrorChannel <- errors.New("can't get a code from google oauth callback")
 		}
-		hs.ErrorChannel <- nil
 		hs.ReturnChannel <- code
+		hs.ErrorChannel <- nil
 	})
 	http.HandleFunc("/get_pass", func(_ http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		pass := q.Get("pass")
 		if pass == "" {
+			hs.ReturnChannel <- ""
 			hs.ErrorChannel <- errors.New("can't get a pass from callback")
 		}
-		hs.ErrorChannel <- nil
 		hs.ReturnChannel <- pass
+		hs.ErrorChannel <- nil
 	})
 	http.HandleFunc("/missing_pass", missingPass)
 	server := http.Server{
 		Addr:        fmt.Sprintf(":%d", hs.port),
 		ReadTimeout: time.Minute,
 	}
+
 	err := server.ListenAndServe()
 	if err != nil {
+		hs.ReturnChannel <- ""
 		hs.ErrorChannel <- fmt.Errorf("https server error in goroutine: %w", err)
 	}
 }
 
 func (hs *Server) ReadChannels() (string, error) {
+	result := <-hs.ReturnChannel
 	err := <-hs.ErrorChannel
 	if err != nil {
 		return "", fmt.Errorf("goruotine error: %w", err)
 	}
-	result := <-hs.ReturnChannel
 
 	return result, err
 }
